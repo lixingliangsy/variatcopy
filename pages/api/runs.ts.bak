@@ -1,0 +1,22 @@
+import type { NextApiRequest, NextApiResponse } from 'next'
+import { exportRunsCsv, listRuns } from '../../lib/pipeline'
+
+/**
+ * GET /api/runs  -> list recent VariatCopy A/B variant generations (L2 workflow audit trail).
+ * GET /api/runs?export=csv -> downloadable CSV export of all runs.
+ */
+export default function handler(req: NextApiRequest, res: NextApiResponse) {
+  if (req.method !== 'GET') return res.status(405).json({ error: 'Method not allowed' })
+
+  try {
+    const exportCsv = String(req.query.export || '').toLowerCase() === 'csv'
+    if (exportCsv) {
+      res.setHeader('Content-Type', 'text/csv')
+      res.setHeader('Content-Disposition', 'attachment; filename="variatcopy-runs.csv"')
+      return res.status(200).send(exportRunsCsv())
+    }
+    return res.status(200).json({ runs: listRuns(50) })
+  } catch (e: any) {
+    return res.status(500).json({ error: e?.message || 'failed to read runs' })
+  }
+}

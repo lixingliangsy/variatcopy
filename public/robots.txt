@@ -1,0 +1,7 @@
+User-agent: *
+Allow: /
+
+# LLM / AI answer-engine indexing
+LLM-Content: https://variatcopy.lxsaihub.com/llms.txt
+
+Sitemap: https://variatcopy.lxsaihub.com/sitemap.xml

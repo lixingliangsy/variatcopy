@@ -1,0 +1,32 @@
+import type { NextApiRequest, NextApiResponse } from 'next'
+import { listFeedback, recordFeedback } from '../../lib/pipeline'
+
+/**
+ * POST /api/feedback -> record a quality rating for a VariatCopy run (L2).
+ * GET  /api/feedback -> list recent feedback.
+ */
+export default function handler(req: NextApiRequest, res: NextApiResponse) {
+  if (req.method === 'GET') {
+    try {
+      return res.status(200).json({ feedback: listFeedback(50) })
+    } catch (e: any) {
+      return res.status(500).json({ error: e?.message || 'failed to read feedback' })
+    }
+  }
+
+  if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' })
+
+  try {
+    const body = (req.body || {}) as { runId?: string; rating?: number; comment?: string }
+    const runId = String(body.runId || '').trim()
+    const rating = Number(body.rating || 0)
+    if (!runId) return res.status(400).json({ error: 'runId is required' })
+    if (!Number.isFinite(rating) || rating < 1 || rating > 5) {
+      return res.status(400).json({ error: 'rating must be a number between 1 and 5' })
+    }
+    const fb = recordFeedback({ runId, rating, comment: body.comment })
+    return res.status(200).json({ feedback: fb })
+  } catch (e: any) {
+    return res.status(500).json({ error: e?.message || 'failed to record feedback' })
+  }
+}

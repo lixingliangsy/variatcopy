@@ -1,0 +1,146 @@
+/**
+ * lib/pipeline.ts — L2 workflow audit trail for VariatCopy.
+ *
+ * Persists A/B variant generations (runs) and quality feedback to a local JSONL store so
+ * /api/runs and /api/feedback can list / export. Pure file IO, no network.
+ *
+ * Prod-safe: Vercel serverless FS is read-only & ephemeral -> use /tmp at runtime, local `data/` in dev.
+ */
+import fs from 'fs'
+import path from 'path'
+
+export type RunSource = 'Model-assisted' | 'Rule-based' | 'Demo'
+
+export interface RunRecord {
+  runId: string
+  angleA: string
+  angleB: string
+  productInfo: string
+  result: string
+  source: RunSource
+  honestyPassed?: boolean
+  flaggedTerms?: string[]
+  createdAt: string
+}
+
+export interface FeedbackRecord {
+  runId: string
+  rating: number
+  comment?: string
+  createdAt: string
+}
+
+const DATA_DIR =
+  process.env.VERCEL || process.env.NODE_ENV === 'production'
+    ? '/tmp/variatcopy-runs'
+    : path.join(process.cwd(), 'data')
+
+const RUNS_FILE = path.join(DATA_DIR, 'runs.jsonl')
+const FEEDBACK_FILE = path.join(DATA_DIR, 'feedback.jsonl')
+
+function ensureDir() {
+  try {
+    if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true })
+    if (!fs.existsSync(RUNS_FILE)) fs.writeFileSync(RUNS_FILE, '', 'utf-8')
+    if (!fs.existsSync(FEEDBACK_FILE)) fs.writeFileSync(FEEDBACK_FILE, '', 'utf-8')
+  } catch (e) {
+    console.warn('[pipeline] ensureDir skipped (read-only FS):', (e as any)?.message)
+  }
+}
+
+function appendJsonl(file: string, obj: unknown) {
+  ensureDir()
+  try {
+    fs.appendFileSync(file, JSON.stringify(obj) + '\n', 'utf-8')
+  } catch (e) {
+    console.warn('[pipeline] append failed (non-fatal):', (e as any)?.message)
+  }
+}
+
+function readJsonl<T>(file: string): T[] {
+  ensureDir()
+  try {
+    const raw = fs.readFileSync(file, 'utf-8')
+    return raw
+      .split('\n')
+      .map((l) => l.trim())
+      .filter(Boolean)
+      .map((l) => JSON.parse(l) as T)
+  } catch {
+    return []
+  }
+}
+
+function newId(prefix: string): string {
+  return prefix + '_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 7)
+}
+
+/** Persist a variant generation to the audit trail. Returns the stored record (with runId). */
+export function persistRun(input: {
+  angleA: string
+  angleB: string
+  productInfo: string
+  result: string
+  source: RunSource
+  honestyPassed?: boolean
+  flaggedTerms?: string[]
+}): RunRecord {
+  const rec: RunRecord = {
+    runId: newId('run'),
+    angleA: input.angleA,
+    angleB: input.angleB,
+    productInfo: input.productInfo,
+    result: input.result,
+    source: input.source,
+    honestyPassed: input.honestyPassed,
+    flaggedTerms: input.flaggedTerms,
+    createdAt: new Date().toISOString(),
+  }
+  appendJsonl(RUNS_FILE, rec)
+  return rec
+}
+
+/** List most recent runs (newest first), capped at `limit`. */
+export function listRuns(limit = 50): RunRecord[] {
+  const all = readJsonl<RunRecord>(RUNS_FILE)
+  return all.slice(-limit).reverse()
+}
+
+/** Export all runs as CSV (header + rows). Safe for empty store. */
+export function exportRunsCsv(): string {
+  const all = readJsonl<RunRecord>(RUNS_FILE)
+  const header = ['runId', 'createdAt', 'angleA', 'angleB', 'source', 'honestyPassed', 'flaggedTerms', 'productInfo', 'result']
+  const esc = (v: unknown) => {
+    const s = v === undefined || v === null ? '' : String(v)
+    return '"' + s.replace(/"/g, '""').replace(/\n/g, ' ') + '"'
+  }
+  const rows = all.map((r) =>
+    [r.runId, r.createdAt, r.angleA, r.angleB, r.source, r.honestyPassed ?? '', (r.flaggedTerms || []).join(';'), r.productInfo, r.result]
+      .map(esc)
+      .join(','),
+  )
+  return [header.join(','), ...rows].join('\n')
+}
+
+function clampRating(rating: number): number {
+  if (!Number.isFinite(rating)) return 1
+  return Math.max(1, Math.min(5, Math.round(rating)))
+}
+
+/** Record a quality rating for a run. Returns the stored record. */
+export function recordFeedback(input: { runId: string; rating: number; comment?: string }): FeedbackRecord {
+  const rec: FeedbackRecord = {
+    runId: input.runId,
+    rating: clampRating(input.rating),
+    comment: input.comment,
+    createdAt: new Date().toISOString(),
+  }
+  appendJsonl(FEEDBACK_FILE, rec)
+  return rec
+}
+
+/** List most recent feedback (newest first), capped at `limit`. */
+export function listFeedback(limit = 50): FeedbackRecord[] {
+  const all = readJsonl<FeedbackRecord>(FEEDBACK_FILE)
+  return all.slice(-limit).reverse()
+}
